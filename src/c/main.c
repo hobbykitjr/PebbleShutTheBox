@@ -61,6 +61,7 @@ static bool s_selected[MAX_TILES];
 static int  s_selected_sum;
 
 static bool s_show_scores;
+static int  s_gameover_cursor; // 0=rematch, 1=new game
 
 // Tile count options
 static const int s_tile_opts[] = {9, 10, 12};
@@ -353,7 +354,7 @@ static void canvas_proc(Layer *l, GContext *ctx) {
     #else
     graphics_context_set_fill_color(ctx, GColorWhite);
     #endif
-    graphics_fill_rect(ctx, GRect(40, cy-2, w-80, 30), 6, GCornersAll);
+    graphics_fill_rect(ctx, GRect(40, cy+2, w-80, 30), 6, GCornersAll);
     #ifdef PBL_COLOR
     graphics_context_set_text_color(ctx, GColorWhite);
     #else
@@ -647,10 +648,30 @@ static void canvas_proc(Layer *l, GContext *ctx) {
       }
     }
 
-    graphics_context_set_text_color(ctx, GColorWhite);
-    graphics_draw_text(ctx, "SELECT: new game", f_sm,
-      GRect(0, h - PBL_IF_ROUND_ELSE(26, 18), w, 16),
-      GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
+    // Rematch / New Game buttons
+    int btn_y = h - PBL_IF_ROUND_ELSE(42, 34);
+    int btn_w = 80;
+    int btn_gap = 8;
+    int btn_x0 = (w - btn_w * 2 - btn_gap) / 2;
+    int btn_x1 = btn_x0 + btn_w + btn_gap;
+    for(int bi = 0; bi < 2; bi++) {
+      bool bsel = (s_gameover_cursor == bi);
+      int bx = (bi == 0) ? btn_x0 : btn_x1;
+      #ifdef PBL_COLOR
+      graphics_context_set_fill_color(ctx, bsel ? GColorGreen : GColorFromHEX(0x003300));
+      #else
+      graphics_context_set_fill_color(ctx, bsel ? GColorWhite : GColorDarkGray);
+      #endif
+      graphics_fill_rect(ctx, GRect(bx, btn_y, btn_w, 22), 6, GCornersAll);
+      #ifdef PBL_COLOR
+      graphics_context_set_text_color(ctx, bsel ? GColorBlack : GColorLightGray);
+      #else
+      graphics_context_set_text_color(ctx, bsel ? GColorBlack : GColorWhite);
+      #endif
+      graphics_draw_text(ctx, bi == 0 ? "Rematch" : "New Game",
+        f_sm, GRect(bx, btn_y + 2, btn_w, 18),
+        GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
+    }
   }
 
   // ======== SCORES OVERLAY (hold UP) ========
@@ -760,6 +781,7 @@ static void select_click(ClickRecognizerRef ref, void *ctx) {
 
         if(all_shut(cp)) {
           s_players[cp].shut_all = true;
+          s_gameover_cursor = 0;
           s_state = ST_GAMEOVER;
           vibes_short_pulse();
         } else {
@@ -772,14 +794,24 @@ static void select_click(ClickRecognizerRef ref, void *ctx) {
   else if(s_state == ST_BUST) {
     next_player();
     if(s_cur_idx == 0) {
+      s_gameover_cursor = 0;
       s_state = ST_GAMEOVER;
     } else {
       s_state = ST_ROLL;
     }
   }
   else if(s_state == ST_GAMEOVER) {
-    s_state = ST_SETUP;
-    s_setup_cursor = s_num_players - 2;
+    if(s_gameover_cursor == 0) {
+      // Rematch — same players, same settings
+      for(int i = 0; i < s_num_players; i++) init_player_boxes(i);
+      s_cur_idx = 0;
+      s_one_die = false;
+      s_state = ST_ROLL;
+    } else {
+      // New game
+      s_state = ST_SETUP;
+      s_setup_cursor = s_num_players - 2;
+    }
   }
   if(s_canvas) layer_mark_dirty(s_canvas);
 }
@@ -787,6 +819,8 @@ static void select_click(ClickRecognizerRef ref, void *ctx) {
 static void up_click(ClickRecognizerRef ref, void *ctx) {
   if(s_state == ST_SETUP) {
     s_setup_cursor = (s_setup_cursor + 4) % 5;
+  } else if(s_state == ST_GAMEOVER) {
+    s_gameover_cursor = (s_gameover_cursor + 1) % 2;
   } else if(s_state == ST_SETTINGS) {
     s_settings_cursor = (s_settings_cursor + 2) % 3;
   } else if(s_state == ST_SELECT) {
@@ -798,6 +832,8 @@ static void up_click(ClickRecognizerRef ref, void *ctx) {
 static void down_click(ClickRecognizerRef ref, void *ctx) {
   if(s_state == ST_SETUP) {
     s_setup_cursor = (s_setup_cursor + 1) % 5;
+  } else if(s_state == ST_GAMEOVER) {
+    s_gameover_cursor = (s_gameover_cursor + 1) % 2;
   } else if(s_state == ST_SETTINGS) {
     s_settings_cursor = (s_settings_cursor + 1) % 3;
   } else if(s_state == ST_SELECT) {
