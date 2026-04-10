@@ -2,22 +2,24 @@
  * Shut the Box — Dice game for Pebble
  * Targets: emery (Time 2), gabbro (Round 2)
  *
- * 2-6 players. Each player has tiles 1-9. Roll dice, shut tiles
- * that sum to the roll. If no valid combo, you bust. Lowest
- * remaining sum wins. Shutting all tiles wins immediately.
+ * 2-6 players. Each player has tiles 1-9/10/12. Roll dice, shut tiles
+ * that sum to the roll. If no valid combo, you bust.
+ * Win by: lowest sum or fewest remaining tiles.
+ * Shutting all tiles wins immediately.
  */
 
 #include <pebble.h>
 #include <stdlib.h>
 
 #define MAX_PLAYERS 6
-#define NUM_TILES   9
+#define MAX_TILES   12
 #define NUM_TOKENS  6
 
-enum { ST_SETUP, ST_ORDER, ST_ROLL, ST_SELECT, ST_BUST, ST_GAMEOVER };
+enum { ST_SETUP, ST_SETTINGS, ST_ORDER, ST_ROLL, ST_SELECT, ST_BUST, ST_GAMEOVER };
+enum { WIN_SUM, WIN_TILES };
 
 typedef struct {
-  bool open[NUM_TILES]; // true = open, false = shut
+  bool open[MAX_TILES];
   int  score;
   bool shut_all;
   int  icon;
@@ -43,17 +45,26 @@ static int s_num_players;
 static int s_setup_cursor = 0;
 static int s_cursor = 0;
 
+// Settings
+static int s_num_tiles = 9;       // 9, 10, or 12
+static int s_win_mode = WIN_SUM;  // WIN_SUM or WIN_TILES
+static int s_settings_cursor = 0; // 0=tiles, 1=win, 2=start
+
 static Player s_players[MAX_PLAYERS];
 static int    s_order[MAX_PLAYERS];
 static int    s_cur_idx;
 
 static int  s_dice[2];
 static int  s_dice_sum;
-static bool s_one_die;        // only 1 die if all open tiles <= 6
-static bool s_selected[NUM_TILES]; // tiles selected for current shut
+static bool s_one_die;
+static bool s_selected[MAX_TILES];
 static int  s_selected_sum;
 
 static bool s_show_scores;
+
+// Tile count options
+static const int s_tile_opts[] = {9, 10, 12};
+static int s_tile_opt_idx = 0; // index into s_tile_opts
 
 // ============================================================================
 // COLORS
@@ -117,11 +128,9 @@ static void draw_die(GContext *ctx, int cx, int cy, int sz, int val) {
   }
 }
 
-// Draw a number tile
 static void draw_tile(GContext *ctx, int x, int y, int tw, int th,
-                      int num, bool is_open, bool selected, bool cursor) {
+                      int num, bool is_open, bool selected, bool cursor_on) {
   if(is_open) {
-    // Open tile — tan/wood color
     #ifdef PBL_COLOR
     graphics_context_set_fill_color(ctx, selected ? GColorYellow :
       GColorFromHEX(0xAA8800));
@@ -130,11 +139,11 @@ static void draw_tile(GContext *ctx, int x, int y, int tw, int th,
     #endif
     graphics_fill_rect(ctx, GRect(x, y, tw, th), 3, GCornersAll);
     #ifdef PBL_COLOR
-    graphics_context_set_stroke_color(ctx, cursor ? GColorWhite : GColorFromHEX(0x554400));
+    graphics_context_set_stroke_color(ctx, cursor_on ? GColorWhite : GColorFromHEX(0x554400));
     #else
-    graphics_context_set_stroke_color(ctx, cursor ? GColorWhite : GColorBlack);
+    graphics_context_set_stroke_color(ctx, cursor_on ? GColorWhite : GColorBlack);
     #endif
-    graphics_context_set_stroke_width(ctx, cursor ? 2 : 1);
+    graphics_context_set_stroke_width(ctx, cursor_on ? 2 : 1);
     graphics_draw_round_rect(ctx, GRect(x, y, tw, th), 3);
     #ifdef PBL_COLOR
     graphics_context_set_text_color(ctx, selected ? GColorBlack : GColorWhite);
@@ -142,7 +151,6 @@ static void draw_tile(GContext *ctx, int x, int y, int tw, int th,
     graphics_context_set_text_color(ctx, selected ? GColorBlack : GColorBlack);
     #endif
   } else {
-    // Shut tile — dark/dimmed
     #ifdef PBL_COLOR
     graphics_context_set_fill_color(ctx, GColorFromHEX(0x333333));
     #else
@@ -153,10 +161,40 @@ static void draw_tile(GContext *ctx, int x, int y, int tw, int th,
   }
   char nb[3];
   snprintf(nb, sizeof(nb), "%d", num);
-  graphics_draw_text(ctx, nb,
-    fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
+  GFont tf = (num >= 10)
+    ? fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD)
+    : fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD);
+  graphics_draw_text(ctx, nb, tf,
     GRect(x, y - 1, tw, th + 2),
     GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
+}
+
+// Draw all tiles for current player
+static void draw_tiles(GContext *ctx, int w, Player *p, int tiles_y) {
+  int row1_n, row2_n;
+  if(s_num_tiles == 12) { row1_n = 6; row2_n = 6; }
+  else if(s_num_tiles == 10) { row1_n = 5; row2_n = 5; }
+  else { row1_n = 5; row2_n = 4; }
+
+  int tw = (s_num_tiles == 12) ? 24 : 28;
+  int th = tw, tgap = 4;
+
+  int row1_w = row1_n * tw + (row1_n - 1) * tgap;
+  int row2_w = row2_n * tw + (row2_n - 1) * tgap;
+  int row1_x = (w - row1_w) / 2;
+  int row2_x = (w - row2_w) / 2;
+
+  for(int i = 0; i < row1_n; i++) {
+    int tx = row1_x + i * (tw + tgap);
+    draw_tile(ctx, tx, tiles_y, tw, th, i+1, p->open[i],
+      s_selected[i], s_state == ST_SELECT && s_cursor == i);
+  }
+  for(int i = 0; i < row2_n; i++) {
+    int idx = row1_n + i;
+    int tx = row2_x + i * (tw + tgap);
+    draw_tile(ctx, tx, tiles_y + th + tgap, tw, th, idx+1, p->open[idx],
+      s_selected[idx], s_state == ST_SELECT && s_cursor == idx);
+  }
 }
 
 // ============================================================================
@@ -182,38 +220,47 @@ static void shuffle_order(void) {
 }
 
 static void init_player_boxes(int pi) {
-  for(int i = 0; i < NUM_TILES; i++) s_players[pi].open[i] = true;
+  for(int i = 0; i < MAX_TILES; i++) s_players[pi].open[i] = (i < s_num_tiles);
   s_players[pi].score = 0;
   s_players[pi].shut_all = false;
 }
 
 static int remaining_sum(int pi) {
   int s = 0;
-  for(int i = 0; i < NUM_TILES; i++)
+  for(int i = 0; i < s_num_tiles; i++)
     if(s_players[pi].open[i]) s += i + 1;
   return s;
 }
 
+static int remaining_count(int pi) {
+  int c = 0;
+  for(int i = 0; i < s_num_tiles; i++)
+    if(s_players[pi].open[i]) c++;
+  return c;
+}
+
+static int player_score(int pi) {
+  return (s_win_mode == WIN_TILES) ? remaining_count(pi) : remaining_sum(pi);
+}
+
 static bool all_shut(int pi) {
-  for(int i = 0; i < NUM_TILES; i++)
+  for(int i = 0; i < s_num_tiles; i++)
     if(s_players[pi].open[i]) return false;
   return true;
 }
 
 static bool check_one_die(int pi) {
-  // Use 1 die if all open tiles are <= 6
-  for(int i = 6; i < NUM_TILES; i++)
+  for(int i = 6; i < s_num_tiles; i++)
     if(s_players[pi].open[i]) return false;
   return true;
 }
 
-// Check if any subset of open tiles sums to target
 static bool can_make_sum(int pi, int target) {
   bool *open = s_players[pi].open;
-  for(int mask = 1; mask < (1 << NUM_TILES); mask++) {
+  for(int mask = 1; mask < (1 << s_num_tiles); mask++) {
     int sum = 0;
     bool valid = true;
-    for(int i = 0; i < NUM_TILES; i++) {
+    for(int i = 0; i < s_num_tiles; i++) {
       if(mask & (1 << i)) {
         if(!open[i]) { valid = false; break; }
         sum += i + 1;
@@ -231,25 +278,23 @@ static void roll_dice(void) {
   s_dice[0] = (rand() % 6) + 1;
   s_dice[1] = s_one_die ? 0 : (rand() % 6) + 1;
   s_dice_sum = s_dice[0] + s_dice[1];
-  for(int i = 0; i < NUM_TILES; i++) s_selected[i] = false;
+  for(int i = 0; i < MAX_TILES; i++) s_selected[i] = false;
   s_selected_sum = 0;
 }
 
-// Move cursor to next open tile in direction
 static void move_cursor(int dir) {
   int cp = cur_player();
   int start = s_cursor;
   do {
-    s_cursor = (s_cursor + dir + NUM_TILES) % NUM_TILES;
+    s_cursor = (s_cursor + dir + s_num_tiles) % s_num_tiles;
   } while(!s_players[cp].open[s_cursor] && s_cursor != start);
 }
 
-// Find first open tile for cursor
 static void cursor_to_first_open(void) {
   int cp = cur_player();
   s_cursor = 0;
-  while(s_cursor < NUM_TILES && !s_players[cp].open[s_cursor]) s_cursor++;
-  if(s_cursor >= NUM_TILES) s_cursor = 0;
+  while(s_cursor < s_num_tiles && !s_players[cp].open[s_cursor]) s_cursor++;
+  if(s_cursor >= s_num_tiles) s_cursor = 0;
 }
 
 static void next_player(void) {
@@ -275,25 +320,28 @@ static void canvas_proc(Layer *l, GContext *ctx) {
   GFont f_md = fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD);
   GFont f_sm = fonts_get_system_font(FONT_KEY_GOTHIC_14);
 
-  // ======== SETUP ========
+  // ======== SETUP (player count) ========
   if(s_state == ST_SETUP) {
     graphics_context_set_text_color(ctx, GColorWhite);
     graphics_draw_text(ctx, "SHUT", f_lg,
       GRect(0, h*5/100, w, 34),
       GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
     graphics_draw_text(ctx, "THE BOX", f_md,
-      GRect(0, h*5/100 + 30, w, 22),
+      GRect(0, h*5/100+30, w, 22),
       GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
 
     const char *opts[] = {"2 Players","3 Players","4 Players","5 Players","6 Players"};
     int cy = h * 42 / 100;
 
-    // Up arrow
     graphics_context_set_text_color(ctx, GColorLightGray);
-    if(s_icon_font_20)
+    if(s_icon_font_20) {
       graphics_draw_text(ctx, "\xEF\x83\x98", s_icon_font_20,
         GRect(w/2-15, cy-28, 30, 26),
         GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
+      graphics_draw_text(ctx, "\xEF\x83\x97", s_icon_font_20,
+        GRect(w/2-15, cy+30, 30, 26),
+        GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
+    }
 
     #ifdef PBL_COLOR
     graphics_context_set_fill_color(ctx, GColorFromHEX(0x004466));
@@ -310,16 +358,91 @@ static void canvas_proc(Layer *l, GContext *ctx) {
       GRect(0, cy-2, w, 30),
       GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
 
-    // Down arrow
-    graphics_context_set_text_color(ctx, GColorLightGray);
-    if(s_icon_font_20)
-      graphics_draw_text(ctx, "\xEF\x83\x97", s_icon_font_20,
-        GRect(w/2-15, cy+30, 30, 26),
-        GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
-
     graphics_context_set_text_color(ctx, GColorWhite);
-    graphics_draw_text(ctx, "SELECT to start", f_sm,
+    graphics_draw_text(ctx, "SELECT to continue", f_sm,
       GRect(0, h*78/100, w, 16),
+      GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
+  }
+
+  // ======== SETTINGS (tiles + win mode) ========
+  else if(s_state == ST_SETTINGS) {
+    graphics_context_set_text_color(ctx, GColorWhite);
+    int title_y = PBL_IF_ROUND_ELSE(pad + 10, pad + 4);
+    graphics_draw_text(ctx, "Settings", f_lg,
+      GRect(0, title_y, w, 34),
+      GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
+
+    int oy = title_y + 44;
+    int row_h = 36;
+    int mx = PBL_IF_ROUND_ELSE(40, 20);
+
+    // Row 0: Tiles
+    {
+      bool sel = (s_settings_cursor == 0);
+      #ifdef PBL_COLOR
+      if(sel) {
+        graphics_context_set_fill_color(ctx, GColorFromHEX(0x004466));
+        graphics_fill_rect(ctx, GRect(mx, oy-2, w-mx*2, row_h-4), 6, GCornersAll);
+      }
+      graphics_context_set_text_color(ctx, sel ? GColorYellow : GColorLightGray);
+      #else
+      graphics_context_set_text_color(ctx, sel ? GColorWhite : GColorLightGray);
+      #endif
+      graphics_draw_text(ctx, "Tiles:", f_sm,
+        GRect(mx+6, oy, 50, 18),
+        GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+      char tb[8]; snprintf(tb, sizeof(tb), "%d", s_num_tiles);
+      graphics_draw_text(ctx, tb, f_md,
+        GRect(mx+6, oy+2, w-mx*2-12, 22),
+        GTextOverflowModeTrailingEllipsis, GTextAlignmentRight, NULL);
+    }
+    oy += row_h;
+
+    // Row 1: Win mode
+    {
+      bool sel = (s_settings_cursor == 1);
+      #ifdef PBL_COLOR
+      if(sel) {
+        graphics_context_set_fill_color(ctx, GColorFromHEX(0x004466));
+        graphics_fill_rect(ctx, GRect(mx, oy-2, w-mx*2, row_h-4), 6, GCornersAll);
+      }
+      graphics_context_set_text_color(ctx, sel ? GColorYellow : GColorLightGray);
+      #else
+      graphics_context_set_text_color(ctx, sel ? GColorWhite : GColorLightGray);
+      #endif
+      graphics_draw_text(ctx, "Win:", f_sm,
+        GRect(mx+6, oy, 40, 18),
+        GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+      const char *wm = (s_win_mode == WIN_SUM) ? "Lowest Sum" : "Fewest Tiles";
+      graphics_draw_text(ctx, wm, f_md,
+        GRect(mx+6, oy+2, w-mx*2-12, 22),
+        GTextOverflowModeTrailingEllipsis, GTextAlignmentRight, NULL);
+    }
+    oy += row_h + 8;
+
+    // Row 2: Start button
+    {
+      bool sel = (s_settings_cursor == 2);
+      #ifdef PBL_COLOR
+      graphics_context_set_fill_color(ctx, sel ? GColorGreen : GColorFromHEX(0x003300));
+      #else
+      graphics_context_set_fill_color(ctx, sel ? GColorWhite : GColorDarkGray);
+      #endif
+      int bw = 100, bx = (w - bw) / 2;
+      graphics_fill_rect(ctx, GRect(bx, oy, bw, 28), 6, GCornersAll);
+      #ifdef PBL_COLOR
+      graphics_context_set_text_color(ctx, sel ? GColorBlack : GColorLightGray);
+      #else
+      graphics_context_set_text_color(ctx, sel ? GColorBlack : GColorWhite);
+      #endif
+      graphics_draw_text(ctx, "START", f_md,
+        GRect(bx, oy + 3, bw, 22),
+        GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
+    }
+
+    graphics_context_set_text_color(ctx, GColorLightGray);
+    graphics_draw_text(ctx, "SELECT to change / start", f_sm,
+      GRect(0, h - PBL_IF_ROUND_ELSE(28, 18), w, 16),
       GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
   }
 
@@ -331,10 +454,8 @@ static void canvas_proc(Layer *l, GContext *ctx) {
       GRect(0, title_y, w, 34),
       GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
 
-    int cols = 2;
-    int rows_n = (s_num_players + 1) / 2;
-    int cell_w = (w - pad * 2) / cols;
-    int cell_h = 50;
+    int cols = 2, rows_n = (s_num_players + 1) / 2;
+    int cell_w = (w - pad*2) / cols, cell_h = 50;
     int grid_h = rows_n * cell_h;
     int grid_y = title_y + 36;
     int avail = h - grid_y - 50;
@@ -357,7 +478,7 @@ static void canvas_proc(Layer *l, GContext *ctx) {
       GRect(0, h - PBL_IF_ROUND_ELSE(42, 34), w, 16),
       GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
     graphics_context_set_text_color(ctx, GColorWhite);
-    graphics_draw_text(ctx, "SELECT to start", f_sm,
+    graphics_draw_text(ctx, "SELECT to deal", f_sm,
       GRect(0, h - PBL_IF_ROUND_ELSE(26, 18), w, 16),
       GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
   }
@@ -367,38 +488,25 @@ static void canvas_proc(Layer *l, GContext *ctx) {
     int cp = cur_player();
     Player *p = &s_players[cp];
 
-    // Icon
     int icon_y = PBL_IF_ROUND_ELSE(32, 18);
     draw_token(ctx, w/2, icon_y, p->icon, true);
 
-    // Tiles: row1 = 1-5, row2 = 6-9
-    int tw = 28, th = 28, tgap = 4;
-    int row1_w = 5 * tw + 4 * tgap; // 156
-    int row2_w = 4 * tw + 3 * tgap; // 124
-    int row1_x = (w - row1_w) / 2;
-    int row2_x = (w - row2_w) / 2;
     int tiles_y = icon_y + 24;
+    draw_tiles(ctx, w, p, tiles_y);
 
-    for(int i = 0; i < 5; i++) {
-      int tx = row1_x + i * (tw + tgap);
-      draw_tile(ctx, tx, tiles_y, tw, th, i+1, p->open[i],
-        s_selected[i], s_state == ST_SELECT && s_cursor == i);
-    }
-    for(int i = 0; i < 4; i++) {
-      int tx = row2_x + i * (tw + tgap);
-      draw_tile(ctx, tx, tiles_y + th + tgap, tw, th, i+6, p->open[i+5],
-        s_selected[i+5], s_state == ST_SELECT && s_cursor == i+5);
-    }
-
-    // Dice
-    int dice_y = tiles_y + 2*(th + tgap) + 10;
+    // Dice area below tiles
+    int tw = (s_num_tiles == 12) ? 24 : 28;
+    int dice_y = tiles_y + 2*(tw + 4) + 10;
     int die_sz = 30;
+
     if(s_state == ST_ROLL) {
-      // Show "SELECT to roll"
       graphics_context_set_text_color(ctx, GColorWhite);
-      char roll_txt[24];
-      snprintf(roll_txt, sizeof(roll_txt), "Remaining: %d", remaining_sum(cp));
-      graphics_draw_text(ctx, roll_txt, f_sm,
+      char rt[24];
+      if(s_win_mode == WIN_TILES)
+        snprintf(rt, sizeof(rt), "Open: %d tiles", remaining_count(cp));
+      else
+        snprintf(rt, sizeof(rt), "Remaining: %d", remaining_sum(cp));
+      graphics_draw_text(ctx, rt, f_sm,
         GRect(0, dice_y, w, 16),
         GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
       graphics_draw_text(ctx, "SELECT to roll", f_md,
@@ -411,32 +519,27 @@ static void canvas_proc(Layer *l, GContext *ctx) {
           GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
       }
     } else {
-      // Show dice and sum
-      if(s_one_die) {
+      if(s_one_die)
         draw_die(ctx, w/2, dice_y + die_sz/2, die_sz, s_dice[0]);
-      } else {
+      else {
         draw_die(ctx, w/2 - die_sz/2 - 4, dice_y + die_sz/2, die_sz, s_dice[0]);
         draw_die(ctx, w/2 + die_sz/2 + 4, dice_y + die_sz/2, die_sz, s_dice[1]);
       }
 
-      // Sum display
-      char sum_buf[16];
-      snprintf(sum_buf, sizeof(sum_buf), "= %d", s_dice_sum);
+      char sb[16]; snprintf(sb, sizeof(sb), "= %d", s_dice_sum);
       graphics_context_set_text_color(ctx, GColorWhite);
-      graphics_draw_text(ctx, sum_buf, f_md,
+      graphics_draw_text(ctx, sb, f_md,
         GRect(0, dice_y + die_sz + 2, w, 22),
         GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
 
       if(s_state == ST_SELECT && s_selected_sum > 0) {
-        // Show selected sum progress
-        char sel_buf[20];
-        snprintf(sel_buf, sizeof(sel_buf), "Selected: %d / %d",
-          s_selected_sum, s_dice_sum);
+        char sel[20];
+        snprintf(sel, sizeof(sel), "Selected: %d / %d", s_selected_sum, s_dice_sum);
         #ifdef PBL_COLOR
         graphics_context_set_text_color(ctx,
           s_selected_sum == s_dice_sum ? GColorGreen : GColorYellow);
         #endif
-        graphics_draw_text(ctx, sel_buf, f_sm,
+        graphics_draw_text(ctx, sel, f_sm,
           GRect(0, dice_y + die_sz + 22, w, 16),
           GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
       }
@@ -451,8 +554,11 @@ static void canvas_proc(Layer *l, GContext *ctx) {
           GRect(0, dice_y + die_sz + 4, w, 32),
           GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
         graphics_context_set_text_color(ctx, GColorWhite);
-        char sc[16];
-        snprintf(sc, sizeof(sc), "Score: %d", p->score);
+        char sc[20];
+        if(s_win_mode == WIN_TILES)
+          snprintf(sc, sizeof(sc), "%d tiles left", remaining_count(cp));
+        else
+          snprintf(sc, sizeof(sc), "Score: %d", p->score);
         graphics_draw_text(ctx, sc, f_sm,
           GRect(0, dice_y + die_sz + 34, w, 16),
           GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
@@ -467,7 +573,6 @@ static void canvas_proc(Layer *l, GContext *ctx) {
   else if(s_state == ST_GAMEOVER) {
     int title_y = PBL_IF_ROUND_ELSE(pad + 10, pad);
 
-    // Check for shut-the-box winner
     int winner_pi = -1;
     for(int i = 0; i < s_num_players; i++)
       if(s_players[i].shut_all) { winner_pi = i; break; }
@@ -496,7 +601,6 @@ static void canvas_proc(Layer *l, GContext *ctx) {
         GRect(0, title_y, w, 34),
         GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
 
-      // Find lowest score
       int lo = 999;
       for(int i = 0; i < s_num_players; i++)
         if(s_players[i].score < lo) lo = s_players[i].score;
@@ -508,18 +612,25 @@ static void canvas_proc(Layer *l, GContext *ctx) {
         int pi = s_order[i];
         bool win = (s_players[pi].score == lo);
         draw_token(ctx, lx, ly + rh/2, s_players[pi].icon, false);
-        char sc[16];
-        if(win)
-          snprintf(sc, sizeof(sc), "%d pts  WIN", s_players[pi].score);
-        else
-          snprintf(sc, sizeof(sc), "%d pts", s_players[pi].score);
+        char sc[20];
+        if(s_win_mode == WIN_TILES) {
+          if(win)
+            snprintf(sc, sizeof(sc), "%d tiles  WIN", s_players[pi].score);
+          else
+            snprintf(sc, sizeof(sc), "%d tiles", s_players[pi].score);
+        } else {
+          if(win)
+            snprintf(sc, sizeof(sc), "%d pts  WIN", s_players[pi].score);
+          else
+            snprintf(sc, sizeof(sc), "%d pts", s_players[pi].score);
+        }
         #ifdef PBL_COLOR
         graphics_context_set_text_color(ctx, win ? GColorYellow : GColorWhite);
         #else
         graphics_context_set_text_color(ctx, GColorWhite);
         #endif
         graphics_draw_text(ctx, sc, win ? f_md : f_sm,
-          GRect(lx + 18, ly + (rh - 18)/2, w - lx - 22, 20),
+          GRect(lx + 18, ly + (rh-18)/2, w - lx - 22, 20),
           GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
         ly += rh;
       }
@@ -553,9 +664,12 @@ static void canvas_proc(Layer *l, GContext *ctx) {
       char info[24];
       if(s_players[pi].shut_all)
         snprintf(info, sizeof(info), "SHUT!");
-      else if(done)
-        snprintf(info, sizeof(info), "%d pts", s_players[pi].score);
-      else
+      else if(done) {
+        if(s_win_mode == WIN_TILES)
+          snprintf(info, sizeof(info), "%d tiles", s_players[pi].score);
+        else
+          snprintf(info, sizeof(info), "%d pts", s_players[pi].score);
+      } else
         snprintf(info, sizeof(info), "playing...");
 
       #ifdef PBL_COLOR
@@ -578,13 +692,26 @@ static void select_click(ClickRecognizerRef ref, void *ctx) {
   if(s_state == ST_SETUP) {
     s_num_players = s_setup_cursor + 2;
     shuffle_order();
-    s_state = ST_ORDER;
+    s_settings_cursor = 0;
+    s_state = ST_SETTINGS;
+  }
+  else if(s_state == ST_SETTINGS) {
+    if(s_settings_cursor == 0) {
+      // Cycle tile count
+      s_tile_opt_idx = (s_tile_opt_idx + 1) % 3;
+      s_num_tiles = s_tile_opts[s_tile_opt_idx];
+    } else if(s_settings_cursor == 1) {
+      // Toggle win mode
+      s_win_mode = (s_win_mode == WIN_SUM) ? WIN_TILES : WIN_SUM;
+    } else {
+      // Start
+      for(int i = 0; i < s_num_players; i++) init_player_boxes(i);
+      s_cur_idx = 0;
+      s_one_die = false;
+      s_state = ST_ORDER;
+    }
   }
   else if(s_state == ST_ORDER) {
-    // Init all players
-    for(int i = 0; i < s_num_players; i++) init_player_boxes(i);
-    s_cur_idx = 0;
-    s_one_die = false;
     s_state = ST_ROLL;
   }
   else if(s_state == ST_ROLL) {
@@ -594,8 +721,7 @@ static void select_click(ClickRecognizerRef ref, void *ctx) {
       cursor_to_first_open();
       s_state = ST_SELECT;
     } else {
-      // Bust!
-      s_players[cp].score = remaining_sum(cp);
+      s_players[cp].score = player_score(cp);
       s_state = ST_BUST;
       vibes_long_pulse();
     }
@@ -603,32 +729,26 @@ static void select_click(ClickRecognizerRef ref, void *ctx) {
   else if(s_state == ST_SELECT) {
     int cp = cur_player();
     int tile = s_cursor;
-    if(tile < NUM_TILES && s_players[cp].open[tile]) {
+    if(tile < s_num_tiles && s_players[cp].open[tile]) {
       if(s_selected[tile]) {
-        // Deselect
         s_selected[tile] = false;
         s_selected_sum -= (tile + 1);
       } else if(s_selected_sum + tile + 1 <= s_dice_sum) {
-        // Select (only if won't exceed sum)
         s_selected[tile] = true;
         s_selected_sum += (tile + 1);
       }
 
-      // Check if selected sum matches dice
       if(s_selected_sum == s_dice_sum) {
-        // Shut the selected tiles
-        for(int i = 0; i < NUM_TILES; i++)
+        for(int i = 0; i < s_num_tiles; i++)
           if(s_selected[i]) s_players[cp].open[i] = false;
-        for(int i = 0; i < NUM_TILES; i++) s_selected[i] = false;
+        for(int i = 0; i < MAX_TILES; i++) s_selected[i] = false;
         s_selected_sum = 0;
 
-        // Check for shut the box
         if(all_shut(cp)) {
           s_players[cp].shut_all = true;
           s_state = ST_GAMEOVER;
           vibes_short_pulse();
         } else {
-          // Continue rolling
           s_one_die = check_one_die(cp);
           s_state = ST_ROLL;
         }
@@ -636,10 +756,8 @@ static void select_click(ClickRecognizerRef ref, void *ctx) {
     }
   }
   else if(s_state == ST_BUST) {
-    // Next player or game over
     next_player();
     if(s_cur_idx == 0) {
-      // All players done
       s_state = ST_GAMEOVER;
     } else {
       s_state = ST_ROLL;
@@ -655,6 +773,8 @@ static void select_click(ClickRecognizerRef ref, void *ctx) {
 static void up_click(ClickRecognizerRef ref, void *ctx) {
   if(s_state == ST_SETUP) {
     s_setup_cursor = (s_setup_cursor + 4) % 5;
+  } else if(s_state == ST_SETTINGS) {
+    s_settings_cursor = (s_settings_cursor + 2) % 3;
   } else if(s_state == ST_SELECT) {
     move_cursor(-1);
   }
@@ -664,6 +784,8 @@ static void up_click(ClickRecognizerRef ref, void *ctx) {
 static void down_click(ClickRecognizerRef ref, void *ctx) {
   if(s_state == ST_SETUP) {
     s_setup_cursor = (s_setup_cursor + 1) % 5;
+  } else if(s_state == ST_SETTINGS) {
+    s_settings_cursor = (s_settings_cursor + 1) % 3;
   } else if(s_state == ST_SELECT) {
     move_cursor(1);
   }
@@ -673,7 +795,10 @@ static void down_click(ClickRecognizerRef ref, void *ctx) {
 static void back_click(ClickRecognizerRef ref, void *ctx) {
   if(s_state == ST_SETUP || s_state == ST_GAMEOVER)
     window_stack_pop(true);
-  else {
+  else if(s_state == ST_SETTINGS) {
+    s_state = ST_SETUP;
+    if(s_canvas) layer_mark_dirty(s_canvas);
+  } else {
     s_state = ST_SETUP; s_setup_cursor = 0;
     if(s_canvas) layer_mark_dirty(s_canvas);
   }
