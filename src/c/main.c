@@ -787,8 +787,8 @@ static void select_click(ClickRecognizerRef ref, void *ctx) {
         s_selected_sum += (tile + 1);
       }
 
-      // After toggle, reposition cursor if current tile no longer selectable
-      if(!tile_selectable(s_cursor)) move_cursor(1);
+      // After toggle, jump to next selectable tile
+      move_cursor(1);
 
       if(s_selected_sum == s_dice_sum) {
         for(int i = 0; i < s_num_tiles; i++)
