@@ -61,11 +61,31 @@ static bool s_selected[MAX_TILES];
 static int  s_selected_sum;
 
 static bool s_show_scores;
-static int  s_gameover_cursor; // 0=rematch, 1=new game
+static int  s_gameover_cursor; // 0=rematch/try again, 1=new game
 
 // Tile count options
 static const int s_tile_opts[] = {9, 10, 12};
-static int s_tile_opt_idx = 0; // index into s_tile_opts
+static int s_tile_opt_idx = 0;
+
+// Solo mode
+static int  s_solo_tries;       // current attempt #
+static int  s_solo_best_score;  // lowest score this session (until shut)
+static int  s_best_tries[3];    // persisted: fewest tries to shut for 9/10/12
+
+#define P_BEST_9  0
+#define P_BEST_10 1
+#define P_BEST_12 2
+
+static int best_tries_key(void) {
+  if(s_num_tiles == 10) return P_BEST_10;
+  if(s_num_tiles == 12) return P_BEST_12;
+  return P_BEST_9;
+}
+static int best_tries_idx(void) {
+  if(s_num_tiles == 10) return 1;
+  if(s_num_tiles == 12) return 2;
+  return 0;
+}
 
 // ============================================================================
 // COLORS
@@ -353,7 +373,7 @@ static void canvas_proc(Layer *l, GContext *ctx) {
       GRect(0, h*5/100+30, w, 22),
       GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
 
-    const char *opts[] = {"2 Players","3 Players","4 Players","5 Players","6 Players"};
+    const char *opts[] = {"Solo","2 Players","3 Players","4 Players","5 Players","6 Players"};
     int cy = h * 42 / 100;
 
     graphics_context_set_text_color(ctx, GColorLightGray);
@@ -463,6 +483,23 @@ static void canvas_proc(Layer *l, GContext *ctx) {
         GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
     }
 
+    // Show best tries for solo mode
+    if(s_num_players == 1) {
+      int bt = s_best_tries[best_tries_idx()];
+      if(bt > 0) {
+        char bb[24];
+        snprintf(bb, sizeof(bb), "Best: %d tries (%d)", bt, s_num_tiles);
+        #ifdef PBL_COLOR
+        graphics_context_set_text_color(ctx, GColorYellow);
+        #else
+        graphics_context_set_text_color(ctx, GColorWhite);
+        #endif
+        graphics_draw_text(ctx, bb, f_sm,
+          GRect(0, h - PBL_IF_ROUND_ELSE(46, 36), w, 16),
+          GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
+      }
+    }
+
     graphics_context_set_text_color(ctx, GColorLightGray);
     graphics_draw_text(ctx, "SELECT to change / start", f_sm,
       GRect(0, h - PBL_IF_ROUND_ELSE(28, 18), w, 16),
@@ -524,11 +561,15 @@ static void canvas_proc(Layer *l, GContext *ctx) {
 
     if(s_state == ST_ROLL) {
       graphics_context_set_text_color(ctx, GColorWhite);
-      char rt[24];
-      if(s_win_mode == WIN_TILES)
+      char rt[32];
+      if(s_num_players == 1) {
+        snprintf(rt, sizeof(rt), "Try #%d  Rem: %d",
+          s_solo_tries, remaining_sum(cp));
+      } else if(s_win_mode == WIN_TILES) {
         snprintf(rt, sizeof(rt), "Open: %d tiles", remaining_count(cp));
-      else
+      } else {
         snprintf(rt, sizeof(rt), "Remaining: %d", remaining_sum(cp));
+      }
       graphics_draw_text(ctx, rt, f_sm,
         GRect(0, dice_y, w, 16),
         GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
@@ -583,15 +624,20 @@ static void canvas_proc(Layer *l, GContext *ctx) {
           GRect(0, dice_y + die_sz + 2, w, 32),
           GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
         graphics_context_set_text_color(ctx, GColorWhite);
-        char sc[20];
-        if(s_win_mode == WIN_TILES)
+        char sc[32];
+        if(s_num_players == 1) {
+          snprintf(sc, sizeof(sc), "Score: %d  Best: %d",
+            remaining_sum(cp), s_solo_best_score > 0 ? s_solo_best_score : remaining_sum(cp));
+        } else if(s_win_mode == WIN_TILES) {
           snprintf(sc, sizeof(sc), "%d tiles left", remaining_count(cp));
-        else
+        } else {
           snprintf(sc, sizeof(sc), "Score: %d", p->score);
+        }
         graphics_draw_text(ctx, sc, f_sm,
           GRect(0, dice_y + die_sz + 32, w, 16),
           GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
-        graphics_draw_text(ctx, "SELECT to continue", f_sm,
+        const char *cont = (s_num_players == 1) ? "SELECT: try again" : "SELECT to continue";
+        graphics_draw_text(ctx, cont, f_sm,
           GRect(0, h - PBL_IF_ROUND_ELSE(28, 18), w, 16),
           GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
       }
@@ -615,11 +661,35 @@ static void canvas_proc(Layer *l, GContext *ctx) {
       graphics_draw_text(ctx, "SHUT!", f_lg,
         GRect(0, title_y, w, 34),
         GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
-      draw_token(ctx, w/2, title_y + 50, s_players[winner_pi].icon, true);
-      graphics_context_set_text_color(ctx, GColorWhite);
-      graphics_draw_text(ctx, "shut the box!", f_md,
-        GRect(0, title_y + 70, w, 22),
-        GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
+      if(s_num_players == 1) {
+        // Solo: show tries info
+        graphics_context_set_text_color(ctx, GColorWhite);
+        graphics_draw_text(ctx, "shut the box!", f_md,
+          GRect(0, title_y + 36, w, 22),
+          GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
+        char tb[24];
+        snprintf(tb, sizeof(tb), "in %d tries!", s_solo_tries);
+        graphics_draw_text(ctx, tb, f_md,
+          GRect(0, title_y + 58, w, 22),
+          GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
+        int bt = s_best_tries[best_tries_idx()];
+        if(bt > 0) {
+          char bb[24];
+          snprintf(bb, sizeof(bb), "Record: %d tries", bt);
+          #ifdef PBL_COLOR
+          graphics_context_set_text_color(ctx, GColorCyan);
+          #endif
+          graphics_draw_text(ctx, bb, f_sm,
+            GRect(0, title_y + 84, w, 16),
+            GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
+        }
+      } else {
+        draw_token(ctx, w/2, title_y + 50, s_players[winner_pi].icon, true);
+        graphics_context_set_text_color(ctx, GColorWhite);
+        graphics_draw_text(ctx, "shut the box!", f_md,
+          GRect(0, title_y + 70, w, 22),
+          GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
+      }
     } else {
       #ifdef PBL_COLOR
       graphics_context_set_text_color(ctx, GColorYellow);
@@ -685,7 +755,8 @@ static void canvas_proc(Layer *l, GContext *ctx) {
       #else
       graphics_context_set_text_color(ctx, bsel ? GColorBlack : GColorWhite);
       #endif
-      graphics_draw_text(ctx, bi == 0 ? "Rematch" : "New Game",
+      const char *bl = (bi == 0) ? (s_num_players == 1 ? "Try Again" : "Rematch") : "New Game";
+      graphics_draw_text(ctx, bl,
         f_sm, GRect(bx, btn_y + 2, btn_w, 18),
         GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
     }
@@ -739,7 +810,7 @@ static void canvas_proc(Layer *l, GContext *ctx) {
 // ============================================================================
 static void select_click(ClickRecognizerRef ref, void *ctx) {
   if(s_state == ST_SETUP) {
-    s_num_players = s_setup_cursor + 2;
+    s_num_players = (s_setup_cursor == 0) ? 1 : s_setup_cursor + 1;
     shuffle_order();
     s_settings_cursor = 0;
     s_state = ST_SETTINGS;
@@ -757,7 +828,13 @@ static void select_click(ClickRecognizerRef ref, void *ctx) {
       for(int i = 0; i < s_num_players; i++) init_player_boxes(i);
       s_cur_idx = 0;
       s_one_die = false;
-      s_state = ST_ORDER;
+      if(s_num_players == 1) {
+        s_solo_tries = 1;
+        s_solo_best_score = 0;
+        s_state = ST_ROLL;
+      } else {
+        s_state = ST_ORDER;
+      }
     }
   }
   else if(s_state == ST_ORDER) {
@@ -799,6 +876,14 @@ static void select_click(ClickRecognizerRef ref, void *ctx) {
         if(all_shut(cp)) {
           s_players[cp].shut_all = true;
           s_gameover_cursor = 0;
+          // Save best tries in solo mode
+          if(s_num_players == 1) {
+            int idx = best_tries_idx();
+            if(s_best_tries[idx] == 0 || s_solo_tries < s_best_tries[idx]) {
+              s_best_tries[idx] = s_solo_tries;
+              persist_write_int(best_tries_key(), s_solo_tries);
+            }
+          }
           s_state = ST_GAMEOVER;
           vibes_short_pulse();
         } else {
@@ -809,25 +894,40 @@ static void select_click(ClickRecognizerRef ref, void *ctx) {
     }
   }
   else if(s_state == ST_BUST) {
-    next_player();
-    if(s_cur_idx == 0) {
-      s_gameover_cursor = 0;
-      s_state = ST_GAMEOVER;
-    } else {
+    if(s_num_players == 1) {
+      // Solo: track best score, try again
+      int sc = remaining_sum(0);
+      if(s_solo_best_score == 0 || sc < s_solo_best_score)
+        s_solo_best_score = sc;
+      s_solo_tries++;
+      init_player_boxes(0);
+      s_one_die = false;
       s_state = ST_ROLL;
+    } else {
+      next_player();
+      if(s_cur_idx == 0) {
+        s_gameover_cursor = 0;
+        s_state = ST_GAMEOVER;
+      } else {
+        s_state = ST_ROLL;
+      }
     }
   }
   else if(s_state == ST_GAMEOVER) {
     if(s_gameover_cursor == 0) {
-      // Rematch — same players, same settings
+      // Rematch / Try Again
       for(int i = 0; i < s_num_players; i++) init_player_boxes(i);
       s_cur_idx = 0;
       s_one_die = false;
+      if(s_num_players == 1) {
+        s_solo_tries = 1;
+        s_solo_best_score = 0;
+      }
       s_state = ST_ROLL;
     } else {
       // New game
       s_state = ST_SETUP;
-      s_setup_cursor = s_num_players - 2;
+      s_setup_cursor = (s_num_players == 1) ? 0 : s_num_players - 1;
     }
   }
   if(s_canvas) layer_mark_dirty(s_canvas);
@@ -835,7 +935,7 @@ static void select_click(ClickRecognizerRef ref, void *ctx) {
 
 static void up_click(ClickRecognizerRef ref, void *ctx) {
   if(s_state == ST_SETUP) {
-    s_setup_cursor = (s_setup_cursor + 4) % 5;
+    s_setup_cursor = (s_setup_cursor + 5) % 6;
   } else if(s_state == ST_GAMEOVER) {
     s_gameover_cursor = (s_gameover_cursor + 1) % 2;
   } else if(s_state == ST_SETTINGS) {
@@ -848,7 +948,7 @@ static void up_click(ClickRecognizerRef ref, void *ctx) {
 
 static void down_click(ClickRecognizerRef ref, void *ctx) {
   if(s_state == ST_SETUP) {
-    s_setup_cursor = (s_setup_cursor + 1) % 5;
+    s_setup_cursor = (s_setup_cursor + 1) % 6;
   } else if(s_state == ST_GAMEOVER) {
     s_gameover_cursor = (s_gameover_cursor + 1) % 2;
   } else if(s_state == ST_SETTINGS) {
@@ -905,6 +1005,9 @@ static void win_unload(Window *w) {
 
 static void init(void) {
   srand(time(NULL));
+  if(persist_exists(P_BEST_9))  s_best_tries[0] = persist_read_int(P_BEST_9);
+  if(persist_exists(P_BEST_10)) s_best_tries[1] = persist_read_int(P_BEST_10);
+  if(persist_exists(P_BEST_12)) s_best_tries[2] = persist_read_int(P_BEST_12);
   s_icon_font_20 = fonts_load_custom_font(resource_get_handle(RESOURCE_ID_ICON_FONT_20));
   s_icon_font_14 = fonts_load_custom_font(resource_get_handle(RESOURCE_ID_ICON_FONT_14));
   s_win = window_create();
