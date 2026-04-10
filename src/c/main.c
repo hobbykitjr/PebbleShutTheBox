@@ -282,18 +282,23 @@ static void roll_dice(void) {
   s_selected_sum = 0;
 }
 
-static void move_cursor(int dir) {
+static bool tile_selectable(int tile) {
   int cp = cur_player();
+  if(!s_players[cp].open[tile]) return false;
+  if(s_selected[tile]) return true; // can deselect
+  return (tile + 1) <= (s_dice_sum - s_selected_sum);
+}
+
+static void move_cursor(int dir) {
   int start = s_cursor;
   do {
     s_cursor = (s_cursor + dir + s_num_tiles) % s_num_tiles;
-  } while(!s_players[cp].open[s_cursor] && s_cursor != start);
+  } while(!tile_selectable(s_cursor) && s_cursor != start);
 }
 
 static void cursor_to_first_open(void) {
-  int cp = cur_player();
   s_cursor = 0;
-  while(s_cursor < s_num_tiles && !s_players[cp].open[s_cursor]) s_cursor++;
+  while(s_cursor < s_num_tiles && !tile_selectable(s_cursor)) s_cursor++;
   if(s_cursor >= s_num_tiles) s_cursor = 0;
 }
 
@@ -519,18 +524,24 @@ static void canvas_proc(Layer *l, GContext *ctx) {
           GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
       }
     } else {
-      if(s_one_die)
-        draw_die(ctx, w/2, dice_y + die_sz/2, die_sz, s_dice[0]);
-      else {
-        draw_die(ctx, w/2 - die_sz/2 - 4, dice_y + die_sz/2, die_sz, s_dice[0]);
-        draw_die(ctx, w/2 + die_sz/2 + 4, dice_y + die_sz/2, die_sz, s_dice[1]);
+      // Dice + sum on same line
+      {
+        int dice_cx = w/2 - 20;
+        int sum_x;
+        if(s_one_die) {
+          draw_die(ctx, dice_cx, dice_y + die_sz/2, die_sz, s_dice[0]);
+          sum_x = dice_cx + die_sz/2 + 6;
+        } else {
+          draw_die(ctx, dice_cx - die_sz/2 - 2, dice_y + die_sz/2, die_sz, s_dice[0]);
+          draw_die(ctx, dice_cx + die_sz/2 + 2, dice_y + die_sz/2, die_sz, s_dice[1]);
+          sum_x = dice_cx + die_sz + 8;
+        }
+        char sb[16]; snprintf(sb, sizeof(sb), "=%d", s_dice_sum);
+        graphics_context_set_text_color(ctx, GColorWhite);
+        graphics_draw_text(ctx, sb, f_md,
+          GRect(sum_x, dice_y + die_sz/2 - 11, 40, 22),
+          GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
       }
-
-      char sb[16]; snprintf(sb, sizeof(sb), "= %d", s_dice_sum);
-      graphics_context_set_text_color(ctx, GColorWhite);
-      graphics_draw_text(ctx, sb, f_md,
-        GRect(0, dice_y + die_sz + 2, w, 22),
-        GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
 
       if(s_state == ST_SELECT && s_selected_sum > 0) {
         char sel[20];
@@ -540,7 +551,7 @@ static void canvas_proc(Layer *l, GContext *ctx) {
           s_selected_sum == s_dice_sum ? GColorGreen : GColorYellow);
         #endif
         graphics_draw_text(ctx, sel, f_sm,
-          GRect(0, dice_y + die_sz + 22, w, 16),
+          GRect(0, dice_y + die_sz + 4, w, 16),
           GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
       }
 
@@ -551,7 +562,7 @@ static void canvas_proc(Layer *l, GContext *ctx) {
         graphics_context_set_text_color(ctx, GColorWhite);
         #endif
         graphics_draw_text(ctx, "BUST!", f_lg,
-          GRect(0, dice_y + die_sz + 4, w, 32),
+          GRect(0, dice_y + die_sz + 2, w, 32),
           GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
         graphics_context_set_text_color(ctx, GColorWhite);
         char sc[20];
@@ -560,7 +571,7 @@ static void canvas_proc(Layer *l, GContext *ctx) {
         else
           snprintf(sc, sizeof(sc), "Score: %d", p->score);
         graphics_draw_text(ctx, sc, f_sm,
-          GRect(0, dice_y + die_sz + 34, w, 16),
+          GRect(0, dice_y + die_sz + 32, w, 16),
           GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
         graphics_draw_text(ctx, "SELECT to continue", f_sm,
           GRect(0, h - PBL_IF_ROUND_ELSE(28, 18), w, 16),
@@ -737,6 +748,9 @@ static void select_click(ClickRecognizerRef ref, void *ctx) {
         s_selected[tile] = true;
         s_selected_sum += (tile + 1);
       }
+
+      // After toggle, reposition cursor if current tile no longer selectable
+      if(!tile_selectable(s_cursor)) move_cursor(1);
 
       if(s_selected_sum == s_dice_sum) {
         for(int i = 0; i < s_num_tiles; i++)
