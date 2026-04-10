@@ -287,7 +287,24 @@ static bool tile_selectable(int tile) {
   int cp = cur_player();
   if(!s_players[cp].open[tile]) return false;
   if(s_selected[tile]) return true; // can deselect
-  return (tile + 1) <= (s_dice_sum - s_selected_sum);
+  // Check if this tile can be part of any valid combo reaching remaining target
+  int remaining = s_dice_sum - s_selected_sum;
+  if((tile + 1) > remaining) return false;
+  bool *open = s_players[cp].open;
+  for(int mask = 1; mask < (1 << s_num_tiles); mask++) {
+    if(!(mask & (1 << tile))) continue; // must include this tile
+    int sum = 0;
+    bool valid = true;
+    for(int i = 0; i < s_num_tiles; i++) {
+      if(mask & (1 << i)) {
+        if(!open[i] || (s_selected[i] && i != tile)) { valid = false; break; }
+        sum += i + 1;
+        if(sum > remaining) { valid = false; break; }
+      }
+    }
+    if(valid && sum == remaining) return true;
+  }
+  return false;
 }
 
 static void move_cursor(int dir) {
