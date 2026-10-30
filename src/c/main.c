@@ -86,6 +86,9 @@ static uint32_t s_last_tap_time = 0;
 static int g_tile_x[MAX_TILES], g_tile_y[MAX_TILES], g_tile_w, g_tile_h;
 static GRect g_btn_go0, g_btn_go1;  // gameover buttons
 static bool g_go_btns_visible = false;
+static int g_picker_top, g_picker_bot;  // setup picker band y range
+static GRect g_settings_row[3];         // settings: tiles, win, start
+static int g_settings_row_n;
 
 static int best_tries_key(void) {
   if(s_num_tiles == 10) return P_BEST_10;
@@ -408,6 +411,8 @@ static void canvas_proc(Layer *l, GContext *ctx) {
     graphics_context_set_fill_color(ctx, GColorWhite);
     #endif
     graphics_fill_rect(ctx, GRect(40, cy+2, w-80, 30), 6, GCornersAll);
+    g_picker_top = cy + 2;
+    g_picker_bot = cy + 32;
     #ifdef PBL_COLOR
     graphics_context_set_text_color(ctx, GColorWhite);
     #else
@@ -434,6 +439,10 @@ static void canvas_proc(Layer *l, GContext *ctx) {
     int oy = title_y + 44;
     int row_h = 36;
     int mx = PBL_IF_ROUND_ELSE(40, 20);
+    g_settings_row_n = 3;
+    g_settings_row[0] = GRect(mx, oy-2, w-mx*2, row_h);
+    g_settings_row[1] = GRect(mx, oy+row_h-2, w-mx*2, row_h);
+    g_settings_row[2] = GRect((w-100)/2, oy+row_h*2+6, 100, 28);
 
     // Row 0: Tiles
     {
@@ -824,8 +833,10 @@ static void canvas_proc(Layer *l, GContext *ctx) {
   }
 }
 
-// Forward declaration for touch handler
+// Forward declarations for touch handler
 static void select_click(ClickRecognizerRef ref, void *ctx);
+static void up_click(ClickRecognizerRef ref, void *ctx);
+static void down_click(ClickRecognizerRef ref, void *ctx);
 
 // ============================================================================
 // TOUCH HANDLER
@@ -857,6 +868,24 @@ static void touch_handler(const TouchEvent *event, void *context) {
   int tx = event->x, ty = event->y;
 
   if(s_touch_direct) {
+    // ST_SETUP: tap above/below picker = navigate, on picker = confirm
+    if(s_state == ST_SETUP) {
+      if(ty < g_picker_top) { up_click(NULL, NULL); return; }
+      if(ty > g_picker_bot) { down_click(NULL, NULL); return; }
+      select_click(NULL, NULL);
+      return;
+    }
+    // ST_SETTINGS: tap a row to select + activate it
+    if(s_state == ST_SETTINGS) {
+      for(int i = 0; i < g_settings_row_n; i++) {
+        if(point_in_rect(tx, ty, g_settings_row[i])) {
+          s_settings_cursor = i;
+          select_click(NULL, NULL);
+          return;
+        }
+      }
+      return; // tap outside rows = ignore
+    }
     // Tap tile directly in SELECT state
     if(s_state == ST_SELECT) {
       int tile = touch_hit_tile(tx, ty);
