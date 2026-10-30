@@ -72,9 +72,20 @@ static int  s_solo_tries;       // current attempt #
 static int  s_solo_best_score;  // lowest score this session (until shut)
 static int  s_best_tries[3];    // persisted: fewest tries to shut for 9/10/12
 
-#define P_BEST_9  0
-#define P_BEST_10 1
-#define P_BEST_12 2
+#define P_BEST_9       0
+#define P_BEST_10      1
+#define P_BEST_12      2
+#define P_TOUCH_DIRECT 3
+
+// Touch support
+static bool s_touch_direct = true;
+#define TAP_COOLDOWN_MS 200
+static uint32_t s_last_tap_time = 0;
+
+// Cached layout for touch hit-testing (updated each draw)
+static int g_tile_x[MAX_TILES], g_tile_y[MAX_TILES], g_tile_w, g_tile_h;
+static GRect g_btn_go0, g_btn_go1;  // gameover buttons
+static bool g_go_btns_visible = false;
 
 static int best_tries_key(void) {
   if(s_num_tiles == 10) return P_BEST_10;
@@ -199,6 +210,7 @@ static void draw_tiles(GContext *ctx, int w, Player *p, int tiles_y) {
 
   int tw = (s_num_tiles == 12) ? 24 : 28;
   int th = tw, tgap = 4;
+  g_tile_w = tw; g_tile_h = th;
 
   int row1_w = row1_n * tw + (row1_n - 1) * tgap;
   int row2_w = row2_n * tw + (row2_n - 1) * tgap;
@@ -207,12 +219,14 @@ static void draw_tiles(GContext *ctx, int w, Player *p, int tiles_y) {
 
   for(int i = 0; i < row1_n; i++) {
     int tx = row1_x + i * (tw + tgap);
+    g_tile_x[i] = tx; g_tile_y[i] = tiles_y;
     draw_tile(ctx, tx, tiles_y, tw, th, i+1, p->open[i],
       s_selected[i], s_state == ST_SELECT && s_cursor == i);
   }
   for(int i = 0; i < row2_n; i++) {
     int idx = row1_n + i;
     int tx = row2_x + i * (tw + tgap);
+    g_tile_x[idx] = tx; g_tile_y[idx] = tiles_y + th + tgap;
     draw_tile(ctx, tx, tiles_y + th + tgap, tw, th, idx+1, p->open[idx],
       s_selected[idx], s_state == ST_SELECT && s_cursor == idx);
   }
@@ -363,6 +377,8 @@ static void canvas_proc(Layer *l, GContext *ctx) {
   GFont f_md = fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD);
   GFont f_sm = fonts_get_system_font(FONT_KEY_GOTHIC_14);
 
+  g_go_btns_visible = false;
+
   // ======== SETUP (player count) ========
   if(s_state == ST_SETUP) {
     graphics_context_set_text_color(ctx, GColorWhite);
@@ -402,7 +418,7 @@ static void canvas_proc(Layer *l, GContext *ctx) {
       GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
 
     graphics_context_set_text_color(ctx, GColorWhite);
-    graphics_draw_text(ctx, "SELECT to continue", f_sm,
+    graphics_draw_text(ctx, "TAP/SELECT to continue", f_sm,
       GRect(0, h*78/100, w, 16),
       GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
   }
@@ -501,7 +517,7 @@ static void canvas_proc(Layer *l, GContext *ctx) {
     }
 
     graphics_context_set_text_color(ctx, GColorLightGray);
-    graphics_draw_text(ctx, "SELECT to change / start", f_sm,
+    graphics_draw_text(ctx, "TAP/SELECT to change", f_sm,
       GRect(0, h - PBL_IF_ROUND_ELSE(28, 18), w, 16),
       GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
   }
@@ -538,7 +554,7 @@ static void canvas_proc(Layer *l, GContext *ctx) {
       GRect(0, h - PBL_IF_ROUND_ELSE(42, 34), w, 16),
       GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
     graphics_context_set_text_color(ctx, GColorWhite);
-    graphics_draw_text(ctx, "SELECT to deal", f_sm,
+    graphics_draw_text(ctx, "TAP/SELECT to deal", f_sm,
       GRect(0, h - PBL_IF_ROUND_ELSE(26, 18), w, 16),
       GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
   }
@@ -573,7 +589,7 @@ static void canvas_proc(Layer *l, GContext *ctx) {
       graphics_draw_text(ctx, rt, f_sm,
         GRect(0, dice_y, w, 16),
         GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
-      graphics_draw_text(ctx, "SELECT to roll", f_md,
+      graphics_draw_text(ctx, "TAP/SELECT to roll", f_md,
         GRect(0, dice_y + 20, w, 22),
         GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
       if(s_one_die) {
@@ -636,7 +652,7 @@ static void canvas_proc(Layer *l, GContext *ctx) {
         graphics_draw_text(ctx, sc, f_sm,
           GRect(0, dice_y + die_sz + 32, w, 16),
           GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
-        const char *cont = (s_num_players == 1) ? "SELECT: try again" : "SELECT to continue";
+        const char *cont = (s_num_players == 1) ? "TAP/SELECT: try again" : "TAP/SELECT to continue";
         graphics_draw_text(ctx, cont, f_sm,
           GRect(0, h - PBL_IF_ROUND_ELSE(28, 18), w, 16),
           GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
@@ -741,6 +757,9 @@ static void canvas_proc(Layer *l, GContext *ctx) {
     int btn_gap = 8;
     int btn_x0 = (w - btn_w * 2 - btn_gap) / 2;
     int btn_x1 = btn_x0 + btn_w + btn_gap;
+    g_btn_go0 = GRect(btn_x0, btn_y, btn_w, 22);
+    g_btn_go1 = GRect(btn_x1, btn_y, btn_w, 22);
+    g_go_btns_visible = true;
     for(int bi = 0; bi < 2; bi++) {
       bool bsel = (s_gameover_cursor == bi);
       int bx = (bi == 0) ? btn_x0 : btn_x1;
@@ -802,6 +821,80 @@ static void canvas_proc(Layer *l, GContext *ctx) {
         GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
       ly += 24;
     }
+  }
+}
+
+// Forward declaration for touch handler
+static void select_click(ClickRecognizerRef ref, void *ctx);
+
+// ============================================================================
+// TOUCH HANDLER
+// ============================================================================
+#ifdef PBL_TOUCH
+static int touch_hit_tile(int tx, int ty) {
+  for(int i = 0; i < s_num_tiles; i++) {
+    if(tx >= g_tile_x[i] && tx < g_tile_x[i] + g_tile_w &&
+       ty >= g_tile_y[i] && ty < g_tile_y[i] + g_tile_h)
+      return i;
+  }
+  return -1;
+}
+
+static bool point_in_rect(int tx, int ty, GRect r) {
+  return tx >= r.origin.x && tx < r.origin.x + r.size.w &&
+         ty >= r.origin.y && ty < r.origin.y + r.size.h;
+}
+
+static void touch_handler(const TouchEvent *event, void *context) {
+  (void)context;
+  if(event->type != TouchEvent_Touchdown) return;
+  time_t t; uint16_t ms;
+  time_ms(&t, &ms);
+  uint32_t now = (uint32_t)(t * 1000 + ms);
+  if(now - s_last_tap_time < TAP_COOLDOWN_MS) return;
+  s_last_tap_time = now;
+
+  int tx = event->x, ty = event->y;
+
+  if(s_touch_direct) {
+    // Tap tile directly in SELECT state
+    if(s_state == ST_SELECT) {
+      int tile = touch_hit_tile(tx, ty);
+      if(tile >= 0 && tile_selectable(tile)) {
+        s_cursor = tile;
+        select_click(NULL, NULL);
+        return;
+      }
+    }
+    // Tap gameover buttons
+    if(s_state == ST_GAMEOVER && g_go_btns_visible) {
+      if(point_in_rect(tx, ty, g_btn_go0)) {
+        s_gameover_cursor = 0;
+        select_click(NULL, NULL);
+        return;
+      }
+      if(point_in_rect(tx, ty, g_btn_go1)) {
+        s_gameover_cursor = 1;
+        select_click(NULL, NULL);
+        return;
+      }
+    }
+  }
+  // Fallthrough: any tap = select_click
+  select_click(NULL, NULL);
+}
+#endif
+
+// ============================================================================
+// APPMESSAGE (config settings)
+// ============================================================================
+static void inbox_received(DictionaryIterator *iter, void *context) {
+  (void)context;
+  Tuple *t = dict_find(iter, MESSAGE_KEY_TOUCH_MODE);
+  if(t) {
+    s_touch_direct = (int)t->value->int32 != 0;
+    persist_write_int(P_TOUCH_DIRECT, s_touch_direct ? 1 : 0);
+    if(s_canvas) layer_mark_dirty(s_canvas);
   }
 }
 
@@ -996,10 +1089,17 @@ static void win_load(Window *w) {
   layer_set_update_proc(s_canvas, canvas_proc);
   layer_add_child(wl, s_canvas);
   window_set_click_config_provider(w, click_config);
+  #ifdef PBL_TOUCH
+  touch_service_subscribe(touch_handler, NULL);
+  window_set_touch_bridge_disabled(w, true);
+  #endif
   s_state = ST_SETUP; s_setup_cursor = 0;
 }
 
 static void win_unload(Window *w) {
+  #ifdef PBL_TOUCH
+  touch_service_unsubscribe();
+  #endif
   if(s_canvas) { layer_destroy(s_canvas); s_canvas = NULL; }
 }
 
@@ -1008,8 +1108,11 @@ static void init(void) {
   if(persist_exists(P_BEST_9))  s_best_tries[0] = persist_read_int(P_BEST_9);
   if(persist_exists(P_BEST_10)) s_best_tries[1] = persist_read_int(P_BEST_10);
   if(persist_exists(P_BEST_12)) s_best_tries[2] = persist_read_int(P_BEST_12);
+  if(persist_exists(P_TOUCH_DIRECT)) s_touch_direct = persist_read_int(P_TOUCH_DIRECT) != 0;
   s_icon_font_20 = fonts_load_custom_font(resource_get_handle(RESOURCE_ID_ICON_FONT_20));
   s_icon_font_14 = fonts_load_custom_font(resource_get_handle(RESOURCE_ID_ICON_FONT_14));
+  app_message_register_inbox_received(inbox_received);
+  app_message_open(64, 64);
   s_win = window_create();
   window_set_background_color(s_win, GColorBlack);
   window_set_window_handlers(s_win, (WindowHandlers){.load=win_load,.unload=win_unload});

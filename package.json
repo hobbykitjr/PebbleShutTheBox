@@ -8,7 +8,9 @@
     "pebble": {
         "displayName": "Shut the Box",
         "enableMultiJS": false,
-        "messageKeys": [],
+        "messageKeys": {
+            "TOUCH_MODE": 0
+        },
         "projectType": "native",
         "resources": {
             "media": [
